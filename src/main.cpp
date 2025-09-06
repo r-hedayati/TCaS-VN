@@ -2,7 +2,7 @@
  * SERVitESApplLayer.cc
  *
  *  Created on: Apr 3, 2018
- *      Author: Reza Hedayati
+ *      Author: Montajab Ghanem
  */
 
 
@@ -36,7 +36,7 @@ void SERVitESApplLayer::initialize(int stage) {
         //speedThereshold = calculateSpeedThereshold(maxSpeed); // we must change this to mathematical model
         speedThereshold = maxSpeed/2;
         speedPenalty = 10 ; // we choose 10 beacause of not being negative
-        res = uniform(1,3);
+        res = intuniform(1,3);
         state = ND;//line 1
         counterSerial = 0;
         for (int i = 0; i< 1000; i++){
@@ -56,6 +56,7 @@ void SERVitESApplLayer::initialize(int stage) {
         kindGateway = 1;// All nodes can be an internal GW
         ID_requester = -1;
        // CHchangeNumber = 0;
+        sourceID = -1;
 
         receiveMsgDuringWaiting = false;
         receivedControlMsgAfterCandidate = false;
@@ -74,6 +75,7 @@ void SERVitESApplLayer::initialize(int stage) {
 
         CHDuration.setName("CH Duration");
         MVDuration.setName("MV Duration");
+        ServiceAvailability.setName("Service Availability");
 
         helloMsgTimer = new cMessage("HelloTimer",HELLO_MSG_TIMER);
         helloMsgTimer->setKind(HELLO_MSG_TIMER);
@@ -120,59 +122,15 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                     for (it=carList.begin();it!=carList.end();++it){
                         EV<<"Node "<<it->id<<endl;
                     }
-                 //   EV << "my speed penalty is : " << speedPenalty << endl;
-                    transmissionTime = simTime() - wsm->getTimestamp();
 
+                    transmissionTime = simTime() - wsm->getTimestamp();
                     tsim = tsimCalculate(wsm->getWsmData(),mobility->getRoadId());
                     tcell = calculateTCell();
                     EV<<"tsim is : "<< tsim <<", tcell is : "<< tcell << " csim is : "<< csim << " speedPenalty is : " << speedPenalty << endl;
                     CSF = CHSelectionFactor(tcell.dbl() , csim , speedPenalty);
-                    EV << "CSF is : " << CSF << endl;
-    //                double d = distance(curPosition.x,curPosition.y,xmid,ymid,0,0);
-    //                tcell = d/(mobility->getSpeed()+1);
+                    EV << "My CSF is : " << CSF << endl;
 
-                    WaveShortMessage* ResponseMsg = new WaveShortMessage("SERVitES",RESPONSE_MSG);
-                    t_channel channel = dataOnSch ? type_SCH : type_CCH;
-                    ResponseMsg->addBitLength(headerLength);
-                    ResponseMsg->addBitLength(dataLengthBits);
-                    switch (channel) {
-                       case type_SCH: ResponseMsg->setChannelNumber(Channels::SCH1); break; //will be rewritten at Mac1609_4 to actual Service Channel. This is just so no controlInfo is needed
-                       case type_CCH: ResponseMsg->setChannelNumber(Channels::CCH); break;
-                    }
-                    for (int r = 0; r < 10; r++){
-                        ResponseMsg->setRoute(r,-1);
-                    }
-                    ResponseMsg->setRoute(0,myId);
-                    //EV<<"response route is "<<ResponseMsg->getRoute(0)<<endl;
-                    ResponseMsg->setPsid(0);
-                    ResponseMsg->setPriority(dataPriority);
-                    ResponseMsg->setWsmVersion(1);
-                    ResponseMsg->setTimestamp(simTime());
-                    ResponseMsg->setSenderAddress(myId);
-                    ResponseMsg->setRecipientAddress(-1);
-                    ResponseMsg->setSenderPos(curPosition);
-                    ResponseMsg->setCellNumber(getCellNumber(curPosition));
-                    ResponseMsg->setDestinationID(wsm->getSenderAddress());
-                    ResponseMsg->setSerial(2);
-                    ResponseMsg->setID(myId);//ID
-                    ResponseMsg->setTtl(ttl);
-                    ResponseMsg->setAngle(mobility->getAngleRad());
-                    ResponseMsg->setWsmData(mobility->getRoadId().c_str());
-                    ResponseMsg->setState(state);//state
-                    ResponseMsg->setID_Controller(ID_Controller);//ID_Controller
-                    ResponseMsg->setCsim(csim);//csim
-                    if (tsim > 0){//tsim
-                        ResponseMsg->setTsim(tsim.dbl());
-                    }
-                    else{
-                        ResponseMsg->setTsim(0);
-                    }
-                    ResponseMsg->setTcell(tcell.dbl());//tcell
-                    ResponseMsg->setSpeedPenalty(speedPenalty);//speedPenalty
-                    ResponseMsg->setCSF(CSF);
-                    ResponseMsg->setKind(RESPONSE_MSG);
-                    ResponseMsg->setResAccess(resAccess);
-                    sendWSM(ResponseMsg);// line 4
+                    sendResponseMsg();
                     EV<<"Response message with state '"<<state<<"' is sent to "<<wsm->getID()<<endl;
                     if (wsm->getTtl() > 0){
                         relayPacket(wsm);
@@ -252,7 +210,9 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
             if (getCellNumber(curPosition) == wsm->getCellNumber()){
                 if (state == ND){
                 EV<<"Candidate message received!"<<endl;
+                CSF=CHSelectionFactor(tcell.dbl() , csim , speedPenalty);
                 // Analysis the information, Line 22
+                EV << "MY CSF is: " << CSF << " WSM CSF is: " << wsm->getCSF() << endl ;
               //  if ((csim >= wsm->getCsim())&&(tcell >= wsm->getTcell())){   //Line 23
                 if(CSF > wsm->getCSF()){
                     EV<<"Change state to CH!"<<endl;
@@ -337,12 +297,21 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                   //each vehicle inside a cluster periodically sends a beacon message to the Controller,
                    scheduleAt(simTime() + beaconInterval, beaconTimer);
                     }
-               if (MVJoins == true){
+               if(MVJoins == true){
+               EV << "resource number is : " << res << endl ;
+               if ((res <= 2)&& (sendQueryMessage == false)){ // Algorithm 2, line 1
+                    sendQueryMsg();// Algorithm 2, line 2
+                    EV << "my Controller ID is(query) : " << ID_Controller << endl ;
+                    sendQueryMessage = true;
+                       }
+               }
+            /*   if (MVJoins == true){
                if ((res <= 2)&&(sendQueryMessage == false)){ // Algorithm 2, line 1
                     sendQueryMsg();// Algorithm 2, line 2
+                    EV << "new MV wants to use Resources";
                     sendQueryMessage = true;
                    }
-               }
+               }*/
             //state = MV;//After selecting the cluster,
             //the vehicle stores the information, becomes an MV, and sends
             //a Join Message to the CH to direct the Controller to join a new MV.
@@ -392,6 +361,7 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                         for (it=memberVList.begin();it!=memberVList.end();++it){
                                memberNumber++;
                                                 }
+                        EV << "controller CSF is: " << CSF << " new controller CSF is: " << wsm->getCSF() << endl ;
                         state = MV;
                         ID_Controller_Old=ID_Controller;
                         ID_Controller=wsm->getID();
@@ -464,8 +434,14 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                 }
             //if (ID_Controller == wsm->getID_Controller()){
                 if ((isGateway == true)||(state == CH)){// Algorithm 3 and 4, line 1
+                    EV<<"Query message received from "<<wsm->getID_requester()<<endl;
                     requesterList.push_back(Requester(wsm->getID(),wsm->getID_requester(),// Algorithm 3 and 4, line 2
                             wsm->getTcell(),wsm->getTsim(), wsm->getCsim(),wsm->getWsmData(),ttl-wsm->getTtl()));
+                    cRequesterList::iterator it1;
+                    for(it1=requesterList.begin();it1!=requesterList.end();++it1){
+                        EV << "requster list is node : " << it1->id << endl;
+                    }
+
                     bool vehicleConnected = false;
                     bool notAllResourceAllocated = false;
                     cConnectedVList::iterator it;
@@ -490,10 +466,14 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                 if ((state == MV)&&(wsm->getIsGateway() == true)){//When a vehicle receives a query message,
                     //it verifies the availability of its resources and sends a response message with
                     //the status of the allocation to the gateway.
+                    if ((resAccess == true) && (wsm->getID_requester()!=myId)){
                     ID_requester = wsm->getID_requester();
                     if (res > 0){
                         resAccess = false ;
                         sendQueryResponseMsg();
+                        serviceTimer = new cMessage("serviceTimer",SERVICE_TIMER);
+                        scheduleAt(simTime() + 6*(transmissionTime+individualOffset) + serviceDuration , serviceTimer);// n = 5;
+                    }
                     }
                 }
             //}
@@ -522,6 +502,8 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                 }
                 if ((state == MV)&&(sendQueryMessage == true)){//Algorithm 2, Line 4
                     if (wsm->getRes() > 0){////Algorithm 2, Line 5, 6
+                        sourceID=wsm->getID();
+                        EV << "source ID is : " << sourceID << endl;
                         useResource();//Algorithm 2, Line 7&8
                     }
                 }
@@ -663,6 +645,12 @@ void SERVitESApplLayer::handlePositionUpdate(cObject* obj) {
     else {
         MVDuration.record(0);
     }
+    if (resAccess == true){
+        ServiceAvailability.record(1);
+    }
+    else {
+        ServiceAvailability.record(0);
+    }
     // stopped for for at least 10s?
     if (mobility->getSpeed() < 1) {
         if (simTime() - lastDroveAt >= 10) {
@@ -765,6 +753,51 @@ void SERVitESApplLayer::sendHelloMsg(){
     sendWSM(HelloMsg);// line 2
 
 }
+void SERVitESApplLayer::sendResponseMsg(){
+    WaveShortMessage* ResponseMsg = new WaveShortMessage("SERVitES",RESPONSE_MSG);
+    t_channel channel = dataOnSch ? type_SCH : type_CCH;
+    ResponseMsg->addBitLength(headerLength);
+    ResponseMsg->addBitLength(dataLengthBits);
+    switch (channel) {
+           case type_SCH: ResponseMsg->setChannelNumber(Channels::SCH1); break; //will be rewritten at Mac1609_4 to actual Service Channel. This is just so no controlInfo is needed
+           case type_CCH: ResponseMsg->setChannelNumber(Channels::CCH); break;
+    }
+    for (int r = 0; r < 10; r++){
+         ResponseMsg->setRoute(r,-1);
+    }
+    ResponseMsg->setRoute(0,myId);
+                        //EV<<"response route is "<<ResponseMsg->getRoute(0)<<endl;
+    ResponseMsg->setPsid(0);
+    ResponseMsg->setPriority(dataPriority);
+    ResponseMsg->setWsmVersion(1);
+    ResponseMsg->setTimestamp(simTime());
+    ResponseMsg->setSenderAddress(myId);
+    ResponseMsg->setRecipientAddress(-1);
+    ResponseMsg->setSenderPos(curPosition);
+    ResponseMsg->setCellNumber(getCellNumber(curPosition));
+    ResponseMsg->setDestinationID(-1);
+    ResponseMsg->setSerial(2);
+    ResponseMsg->setID(myId);//ID
+    ResponseMsg->setTtl(ttl);
+    ResponseMsg->setAngle(mobility->getAngleRad());
+    ResponseMsg->setWsmData(mobility->getRoadId().c_str());
+    ResponseMsg->setState(state);//state
+    ResponseMsg->setID_Controller(ID_Controller);//ID_Controller
+    ResponseMsg->setCsim(csim);//csim
+    if (tsim > 0){//tsim
+           ResponseMsg->setTsim(tsim.dbl());
+              }
+    else{
+           ResponseMsg->setTsim(0);
+            }
+    ResponseMsg->setTcell(tcell.dbl());//tcell
+    ResponseMsg->setSpeedPenalty(speedPenalty);//speedPenalty
+    ResponseMsg->setCSF(CSF);
+    ResponseMsg->setKind(RESPONSE_MSG);
+    ResponseMsg->setResAccess(resAccess);
+    sendWSM(ResponseMsg);// line 4
+    EV<<"Response message sent!"<<endl;
+}
 void SERVitESApplLayer::sendCandidateMsg(){
     WaveShortMessage* candidateMsg = new WaveShortMessage("SERVitES",CANDIDATE_MSG);
     t_channel channel = dataOnSch ? type_SCH : type_CCH;
@@ -804,27 +837,6 @@ void SERVitESApplLayer::sendCandidateMsg(){
     sendWSM(candidateMsg);
     candidateMsgSent = true;
     EV<<"Candidate message sent!"<<endl;
-}
-
-void SERVitESApplLayer::maintenance(){
-    EV<<"Maintenance !"<<endl;
- /*   if (CSF <= wsm->getCSF){
-        state = MV;
-        sendJoinMsg();
-    }
-    else {
-        state = MV ;
-    } */
-    if (ID_Controller != -1){
-        state = MV ;
-        sendJoinMsg();
-    }
-    else {
-        receiveMsgDuringWaiting=false;
-    }
-
-   // sendBeaconMsg();
-    EV << "Maintenance END!" << endl;
 }
 
 void SERVitESApplLayer::sendControllerMsg(){
@@ -1102,7 +1114,7 @@ void SERVitESApplLayer::sendJoinMsg(){
 //    tcell = d/(mobility->getSpeed()+1);
     joinMsg->setTcell(tcell.dbl());//tcell
     joinMsg->setCsim(csim);// csim
-    CSF = CHSelectionFactor(tcell.dbl() , csim , speedPenalty);
+    //CSF = CHSelectionFactor(tcell.dbl() , csim , speedPenalty);
     joinMsg->setCSF(CSF);
     joinMsg->setID_Controller(ID_Controller);// ID_Controller
     joinMsg->setResAccess(resAccess);
@@ -1238,9 +1250,32 @@ void SERVitESApplLayer::sendQueryMsg(){
     sendWSM(queryMsg);
     EV<<"Query message sent!"<<endl;
 }
+
+void SERVitESApplLayer::maintenance(){
+    EV<<"Maintenance !"<<endl;
+ /*   if (CSF <= wsm->getCSF){
+        state = MV;
+        sendJoinMsg();
+    }
+    else {
+        state = MV ;
+    } */
+    if (ID_Controller != -1){
+        state = MV ;
+        CSF = CHSelectionFactor(tcell.dbl() , csim , speedPenalty);
+        sendJoinMsg();
+    }
+    else {
+        receiveMsgDuringWaiting=false;
+    }
+
+   // sendBeaconMsg();
+    EV << "Maintenance END!" << endl;
+}
+
 void SERVitESApplLayer::useResource(){
     EV<<"Start using resources!"<<endl;
-    EV << "node [" << myId << "] is using node [" << wsm->getID() << "] resources." << endl;
+    EV << "node [" << myId << "] is using node [" << sourceID << "] resources." << endl;
     serviceDuration = 0.1;
     serviceDurationFinished = false ;
     resAccess = false;
