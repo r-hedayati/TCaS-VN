@@ -38,6 +38,7 @@ void SERVitESApplLayer::initialize(int stage) {
         speedPenalty = 10 ; // we choose 10 beacause of not being negative
         res = intuniform(1,3);
         state = ND;//line 1
+        resourceState = FREE ;
         counterSerial = 0;
         for (int i = 0; i< 1000; i++){
             stateSerial[i] = -1;
@@ -55,6 +56,7 @@ void SERVitESApplLayer::initialize(int stage) {
         transmissionTime = 0.005;
         beaconInterval = 0.5;
         serviceInterval = 10;
+        serviceSearchingTime=0;
         kindGateway = 1;// All nodes can be an internal GW
         ID_requester = -1;
        // CHchangeNumber = 0;
@@ -62,6 +64,7 @@ void SERVitESApplLayer::initialize(int stage) {
         requestNumber = 0;
         responseNumber = 0;
         useResNumber = 0;
+        testV = 0;
 
         receiveMsgDuringWaiting = false;
         receivedControlMsgAfterCandidate = false;
@@ -81,6 +84,7 @@ void SERVitESApplLayer::initialize(int stage) {
         CHDuration.setName("CH Duration");
         MVDuration.setName("MV Duration");
         ServiceAvailability.setName("Service Availability");
+        ServiceSTATE.setName("RESOURCE STATE");
 
         helloMsgTimer = new cMessage("HelloTimer",HELLO_MSG_TIMER);
         helloMsgTimer->setKind(HELLO_MSG_TIMER);
@@ -149,6 +153,7 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
 //            EV<<"helloMsgSent"<<helloMsgSent<<endl;
             if (getCellNumber(curPosition) == wsm->getCellNumber()){
                 if ((waitingTimeExpireed == false)&&(helloMsgSent == true)){// condition at line 6 of the Algorithm
+                    if (receiveMsgDuringWaiting == false){ // i add this
                     receiveMsgDuringWaiting = true;
                     cCarList::iterator it;
                     bool carExist = false;
@@ -207,6 +212,7 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                 }
                 if ((wsm->getDestinationID() != myId)&&(wsm->getTtl() > 0)){
                     relayPacket(wsm);
+                  }
                 }
             }
             break;
@@ -310,6 +316,8 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                     requestNumber++;
                     EV << "my Controller ID is(query) : " << ID_Controller << endl ;
                     sendQueryMessage = true;
+                    resourceState = SEARCHING;
+                    serviceSearchingTime=simTime();
                        }
                serviceIntervalTimer = new cMessage("serviceIntervalTimer",SERVICE_INTERVAL_TIMER);
                serviceIntervalTimer->setKind(SERVICE_INTERVAL_TIMER);
@@ -404,6 +412,7 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
         case REORGNIZING_MSG:{
             if (getCellNumber(curPosition) == wsm->getCellNumber()){
                 if(wsm->getRecipientAddress() == myId){
+                    testV++;
                     EV<<"Reorgenizing message received from "<<wsm->getID()<<endl;
                     state = CH;
                     ID_Controller = myId;
@@ -489,6 +498,7 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                         ID_requester=wsm->getID_requester();
                         sendQueryResponseMsg();
                         responseNumber++;
+                        resourceState = BUSY;
                         serviceDuration = 0.5;
                         serviceTimer = new cMessage("serviceTimer",SERVICE_TIMER);
                         scheduleAt(simTime() + 6*(transmissionTime+individualOffset) + serviceDuration , serviceTimer);// n = 5;
@@ -522,6 +532,7 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                     if ((wsm->getRes() > 0)&&(myId == wsm->getID_requester())){////Algorithm 2, Line 5, 6
                         sourceID=wsm->getID();
                         EV << "source ID is : " << sourceID << endl;
+                        serviceSearchingTime=simTime()-serviceSearchingTime;
                         useResource();//Algorithm 2, Line 7&8
                         useResNumber++;
                     }
@@ -561,6 +572,7 @@ void SERVitESApplLayer::handleSelfMsg(cMessage* msg){
             break;
         }
         case BEACON_TIMER:{
+            if(state!=CH){
             sendBeaconMsg();
             beaconTimer = new cMessage("beaconTimer",BEACON_TIMER);
             beaconTimer->setKind(BEACON_TIMER);
@@ -568,6 +580,7 @@ void SERVitESApplLayer::handleSelfMsg(cMessage* msg){
                 //each vehicle inside a cluster periodically sends a beacon message to the Controller,
                 scheduleAt(simTime() + beaconInterval, beaconTimer);
             }
+        }
             break;
         }
         case WAITING_AFTER_CANDIDATE_MSG:{
@@ -583,6 +596,8 @@ void SERVitESApplLayer::handleSelfMsg(cMessage* msg){
             EV<<"SERVICE_TIMER fired! -- resources are free"<<endl;
             serviceDurationFinished = true;
             resAccess = true;
+            resourceState = FREE;
+            sendQueryMessage = false;
             EV << "node [" << myId <<"] resources are free -->" << resAccess << endl;
            // scheduleAt(simTime() + 5*(transmissionTime+individualOffset) + serviceDuration, serviceTimer);// n = 5;
             break;
@@ -683,6 +698,20 @@ void SERVitESApplLayer::handlePositionUpdate(cObject* obj) {
     else {
         ServiceAvailability.record(0);
     }
+
+    if (resourceState == FREE){
+        ServiceSTATE.record(0);
+    }
+    if (resourceState == SEARCHING ){
+        ServiceSTATE.record(1);
+    }
+    if (resourceState == BUSY){
+        ServiceSTATE.record(2);
+    }
+    if (resourceState == ALLOCATE){
+        ServiceSTATE.record(3);
+    }
+
     // stopped for for at least 10s?
     if (mobility->getSpeed() < 1) {
         if (simTime() - lastDroveAt >= 10) {
@@ -1314,6 +1343,7 @@ void SERVitESApplLayer::useResource(){
     serviceDuration = 0.5;
     serviceDurationFinished = false ;
     resAccess = false;
+    resourceState = ALLOCATE;
     serviceTimer = new cMessage("serviceTimer",SERVICE_TIMER);
     scheduleAt(simTime() + 5*(transmissionTime+individualOffset) + serviceDuration, serviceTimer);// n = 5;
 
@@ -1478,4 +1508,6 @@ void SERVitESApplLayer::finish(){
     recordScalar("reqNumber", requestNumber);
     recordScalar("response number",responseNumber);
     recordScalar("use resource",useResNumber);
+    recordScalar("TEST VARIABLE" , testV);
+    recordScalar("Serive Searching TIME ",serviceSearchingTime);
 }
