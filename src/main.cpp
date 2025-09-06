@@ -2,7 +2,7 @@
  * SERVitESApplLayer.cc
  *
  *  Created on: Apr 3, 2018
- *      Author: Montajab Ghanem
+ *      Author: Reza Hedayati
  */
 
 
@@ -42,6 +42,7 @@ void SERVitESApplLayer::initialize(int stage) {
         for (int i = 0; i< 1000; i++){
             stateSerial[i] = -1;
             GWSerial[i] = -1 ;
+            serviceSerial[i] = -1;
         }
         stateSerial[counterSerial] = state;
         ID_Controller = -1;
@@ -53,10 +54,14 @@ void SERVitESApplLayer::initialize(int stage) {
         cellnumber = getCellNumber(curPosition);
         transmissionTime = 0.005;
         beaconInterval = 0.5;
+        serviceInterval = 10;
         kindGateway = 1;// All nodes can be an internal GW
         ID_requester = -1;
        // CHchangeNumber = 0;
         sourceID = -1;
+        requestNumber = 0;
+        responseNumber = 0;
+        useResNumber = 0;
 
         receiveMsgDuringWaiting = false;
         receivedControlMsgAfterCandidate = false;
@@ -300,10 +305,19 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                if(MVJoins == true){
                EV << "resource number is : " << res << endl ;
                if ((res <= 2)&& (sendQueryMessage == false)){ // Algorithm 2, line 1
+                    ID_requester = myId;
                     sendQueryMsg();// Algorithm 2, line 2
+                    requestNumber++;
                     EV << "my Controller ID is(query) : " << ID_Controller << endl ;
                     sendQueryMessage = true;
                        }
+               serviceIntervalTimer = new cMessage("serviceIntervalTimer",SERVICE_INTERVAL_TIMER);
+               serviceIntervalTimer->setKind(SERVICE_INTERVAL_TIMER);
+               if (serviceIntervalTimer->isScheduled() != true){//After creating the cluster,
+                      //each vehicle inside a cluster periodically sends a service request message to the Controller,
+               scheduleAt(simTime() + serviceInterval, serviceIntervalTimer);
+                           }
+
                }
             /*   if (MVJoins == true){
                if ((res <= 2)&&(sendQueryMessage == false)){ // Algorithm 2, line 1
@@ -351,6 +365,7 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                                     wsm->getCsim(),wsm->getWsmData(),ttl-wsm->getTtl()));
                         }
                         EV<<"The cluster has now the below members:"<<endl;
+                        memberNumber = 0;
                         for (it=memberVList.begin();it!=memberVList.end();++it){
                             EV<<"Node "<<it->id<<endl;
                             memberNumber++;
@@ -453,7 +468,9 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                     }
                     if ((vehicleConnected)&&(notAllResourceAllocated)){//Algorithm 3 and 4, Line 4
                         if (sendQueryMessage == false){
+                            ID_requester=wsm->getID_requester();
                             sendQueryMsg();//Algorithm 3 and 4, Line 5
+                            requestNumber++;
                             sendQueryMessage = true;
                         }
                     }
@@ -463,17 +480,18 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                         }
                     }
                 }
-                if ((state == MV)&&(wsm->getIsGateway() == true)){//When a vehicle receives a query message,
+                if ((state == MV) && (res > 0)){//When a vehicle receives a query message,
                     //it verifies the availability of its resources and sends a response message with
                     //the status of the allocation to the gateway.
+                    EV << "Provider is : " << myId << "  and requester is: " << wsm->getID_requester() << endl;
                     if ((resAccess == true) && (wsm->getID_requester()!=myId)){
-                    ID_requester = wsm->getID_requester();
-                    if (res > 0){
                         resAccess = false ;
+                        ID_requester=wsm->getID_requester();
                         sendQueryResponseMsg();
+                        responseNumber++;
+                        serviceDuration = 0.5;
                         serviceTimer = new cMessage("serviceTimer",SERVICE_TIMER);
                         scheduleAt(simTime() + 6*(transmissionTime+individualOffset) + serviceDuration , serviceTimer);// n = 5;
-                    }
                     }
                 }
             //}
@@ -500,11 +518,12 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                         }
                     }
                 }
-                if ((state == MV)&&(sendQueryMessage == true)){//Algorithm 2, Line 4
-                    if (wsm->getRes() > 0){////Algorithm 2, Line 5, 6
+                if ((state == MV)&&(sendQueryMessage == true)&&(resAccess==true)){//Algorithm 2, Line 4
+                    if ((wsm->getRes() > 0)&&(myId == wsm->getID_requester())){////Algorithm 2, Line 5, 6
                         sourceID=wsm->getID();
                         EV << "source ID is : " << sourceID << endl;
                         useResource();//Algorithm 2, Line 7&8
+                        useResNumber++;
                     }
                 }
             }
@@ -564,7 +583,20 @@ void SERVitESApplLayer::handleSelfMsg(cMessage* msg){
             EV<<"SERVICE_TIMER fired! -- resources are free"<<endl;
             serviceDurationFinished = true;
             resAccess = true;
+            EV << "node [" << myId <<"] resources are free -->" << resAccess << endl;
            // scheduleAt(simTime() + 5*(transmissionTime+individualOffset) + serviceDuration, serviceTimer);// n = 5;
+            break;
+        }
+        case SERVICE_INTERVAL_TIMER:{
+            ID_requester = myId;
+            sendQueryMsg();
+            requestNumber++;
+            serviceIntervalTimer = new cMessage("serviceIntervalTimer",SERVICE_INTERVAL_TIMER);
+            serviceIntervalTimer->setKind(SERVICE_INTERVAL_TIMER);
+            if (serviceIntervalTimer->isScheduled() != true){//After creating the cluster,
+                //each vehicle inside a cluster periodically sends a service request message to the Controller,
+                scheduleAt(simTime() + serviceInterval, serviceIntervalTimer);
+            }
             break;
         }
         case RESET_TIMER:{
@@ -664,8 +696,10 @@ void SERVitESApplLayer::handlePositionUpdate(cObject* obj) {
     // some calculation to compute Avg CH duration
     counterSerial++;
     stateSerial[counterSerial] = state;
+    GWSerial[counterSerial] = isGateway;
+    serviceSerial[counterSerial] = resAccess;
 
-        GWSerial[counterSerial] = isGateway;
+
 
 
 
@@ -1189,10 +1223,9 @@ void SERVitESApplLayer::sendQueryResponseMsg(){
     responseQueryMsg->setSerial(2);
     responseQueryMsg->setID(myId);// ID
     responseQueryMsg->setTtl(ttl+1);
-    responseQueryMsg->setID_requester(ID_requester);
     responseQueryMsg->setRes(res);// res
    // res = 0;
-    responseQueryMsg->setID_requester(myId);
+    responseQueryMsg->setID_requester(ID_requester);
     responseQueryMsg->setState(state);//state
     responseQueryMsg->setTraje(mobility->getRoadId()[0]);
     responseQueryMsg->setWsmData(mobility->getRoadId().c_str());
@@ -1234,7 +1267,9 @@ void SERVitESApplLayer::sendQueryMsg(){
     queryMsg->setSerial(2);
     queryMsg->setID(myId);// ID
     queryMsg->setRes(res);// res
-    queryMsg->setID_requester(myId);
+    queryMsg->setID_requester(ID_requester);
+    EV <<"ID requester is : " << myId << endl;
+    EV <<"ID requester is : " << ID_requester << endl;
     queryMsg->setState(state);//state
     queryMsg->setTraje(mobility->getRoadId()[0]);
     queryMsg->setWsmData(mobility->getRoadId().c_str());
@@ -1276,7 +1311,7 @@ void SERVitESApplLayer::maintenance(){
 void SERVitESApplLayer::useResource(){
     EV<<"Start using resources!"<<endl;
     EV << "node [" << myId << "] is using node [" << sourceID << "] resources." << endl;
-    serviceDuration = 0.1;
+    serviceDuration = 0.5;
     serviceDurationFinished = false ;
     resAccess = false;
     serviceTimer = new cMessage("serviceTimer",SERVICE_TIMER);
@@ -1367,6 +1402,8 @@ void SERVitESApplLayer::finish(){
     int numMVState = 0;
     int GWDuration = 0;
     int numGWState = 0;
+    int serviceAvailability = 0;
+    int numserviceAvailability = 0;
 
     for (int i=0;i<counterSerial;i++){
         if (stateSerial[i] == CH){
@@ -1391,12 +1428,25 @@ void SERVitESApplLayer::finish(){
         }
 
     }
+    for (int i=0;i<counterSerial;i++){
+        if (serviceSerial[i] == true){
+            serviceAvailability++;
+        }
+        if ((serviceSerial[i] != true)&&(serviceSerial[i+1] == true)){
+            numserviceAvailability++;
+        }
+
+    }
+
     double AvgCHDuration = 0;
     AvgCHDuration = double(CHDuration)/double(numCHState);
     double AvgMVDuration = 0;
     AvgMVDuration = double(MVDuration)/double(numMVState);
     double AvgGWDuration = 0;
     AvgGWDuration = double(GWDuration)/double(numGWState);
+    double AvgServiceAvailability = 0;
+    AvgServiceAvailability = double(serviceAvailability)/double(numserviceAvailability);
+
     if (numCHState > 0){
 
         recordScalar("Avg CH Duration",AvgCHDuration);
@@ -1418,4 +1468,14 @@ void SERVitESApplLayer::finish(){
     else {
         recordScalar("Avg GW Duration",0);
     }
+    if (numserviceAvailability > 0){
+
+           recordScalar("Avg Service Availability",serviceAvailability);
+       }
+       else {
+           recordScalar("Avg Service Availability",0);
+       }
+    recordScalar("reqNumber", requestNumber);
+    recordScalar("response number",responseNumber);
+    recordScalar("use resource",useResNumber);
 }
