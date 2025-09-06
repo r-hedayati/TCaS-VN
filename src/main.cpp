@@ -41,6 +41,7 @@ void SERVitESApplLayer::initialize(int stage) {
         counterSerial = 0;
         for (int i = 0; i< 1000; i++){
             stateSerial[i] = -1;
+            GWSerial[i] = -1 ;
         }
         stateSerial[counterSerial] = state;
         ID_Controller = -1;
@@ -53,10 +54,11 @@ void SERVitESApplLayer::initialize(int stage) {
         transmissionTime = 0.005;
         beaconInterval = 0.5;
         kindGateway = 1;// All nodes can be an internal GW
-        ID_reuester = -1;
+        ID_requester = -1;
        // CHchangeNumber = 0;
 
         receiveMsgDuringWaiting = false;
+        receivedControlMsgAfterCandidate = false;
         waitingTimeExpireed = false;
         helloMsgSent = false;
         candidateMsgSent = false;
@@ -67,16 +69,25 @@ void SERVitESApplLayer::initialize(int stage) {
         sendQueryMessage = false;
         CHchange = false;
         isGateway = false;
+        serviceDurationFinished = true;
+        resAccess = true ;
 
         CHDuration.setName("CH Duration");
-        receivedControlMsgAfterCandidate = false;
+        MVDuration.setName("MV Duration");
+
         helloMsgTimer = new cMessage("HelloTimer",HELLO_MSG_TIMER);
         helloMsgTimer->setKind(HELLO_MSG_TIMER);
-        waitingResponseTimer = new cMessage("waitingResponseTimer",WAITING_RESPONSE_TIMER);
-        resetTimer = new cMessage("resetTimer",RESET_TIMER);
-        scheduleAt(simTime() + 90, resetTimer);
-        waitingResponseTimer->setKind(WAITING_RESPONSE_TIMER);
         scheduleAt(simTime() + 40, helloMsgTimer);
+
+        waitingResponseTimer = new cMessage("waitingResponseTimer",WAITING_RESPONSE_TIMER);
+        waitingResponseTimer->setKind(WAITING_RESPONSE_TIMER);
+
+        resetTimer = new cMessage("resetTimer",RESET_TIMER);
+       // resetTimer->setKind(RESET_TIMER);
+        scheduleAt(simTime() + 90, resetTimer);
+
+
+
     }
 
 }
@@ -160,6 +171,7 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                     ResponseMsg->setSpeedPenalty(speedPenalty);//speedPenalty
                     ResponseMsg->setCSF(CSF);
                     ResponseMsg->setKind(RESPONSE_MSG);
+                    ResponseMsg->setResAccess(resAccess);
                     sendWSM(ResponseMsg);// line 4
                     EV<<"Response message with state '"<<state<<"' is sent to "<<wsm->getID()<<endl;
                     if (wsm->getTtl() > 0){
@@ -458,7 +470,7 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                     bool notAllResourceAllocated = false;
                     cConnectedVList::iterator it;
                     for (it=connectedVList.begin();it!=connectedVList.end();++it){
-                        if((it->id != -1)&&(it->res > 0)){
+                        if((it->id != -1)&&(it->res > 0)&&(resAccess == true)){
                             vehicleConnected = true;
                             notAllResourceAllocated = true;
                         }
@@ -478,8 +490,9 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                 if ((state == MV)&&(wsm->getIsGateway() == true)){//When a vehicle receives a query message,
                     //it verifies the availability of its resources and sends a response message with
                     //the status of the allocation to the gateway.
-                    ID_reuester = wsm->getID_requester();
+                    ID_requester = wsm->getID_requester();
                     if (res > 0){
+                        resAccess = false ;
                         sendQueryResponseMsg();
                     }
                 }
@@ -565,6 +578,13 @@ void SERVitESApplLayer::handleSelfMsg(cMessage* msg){
             }
             break;
         }
+        case SERVICE_TIMER:{
+            EV<<"SERVICE_TIMER fired! -- resources are free"<<endl;
+            serviceDurationFinished = true;
+            resAccess = true;
+           // scheduleAt(simTime() + 5*(transmissionTime+individualOffset) + serviceDuration, serviceTimer);// n = 5;
+            break;
+        }
         case RESET_TIMER:{
             if(helloMsgTimer->isScheduled() != true){
                 scheduleAt(simTime() + 1, helloMsgTimer);
@@ -577,6 +597,7 @@ void SERVitESApplLayer::handleSelfMsg(cMessage* msg){
                 warningMsgSent = false;
                 sendQueryMessage = false;
                 CHchange = false;
+                resAccess = true;
                 res = uniform(1,3);
                 scheduleAt(simTime() + 50, resetTimer);
             }
@@ -636,6 +657,12 @@ void SERVitESApplLayer::handlePositionUpdate(cObject* obj) {
     else {
         CHDuration.record(0);
     }
+    if (state == MV){
+        MVDuration.record(1);
+    }
+    else {
+        MVDuration.record(0);
+    }
     // stopped for for at least 10s?
     if (mobility->getSpeed() < 1) {
         if (simTime() - lastDroveAt >= 10) {
@@ -649,6 +676,10 @@ void SERVitESApplLayer::handlePositionUpdate(cObject* obj) {
     // some calculation to compute Avg CH duration
     counterSerial++;
     stateSerial[counterSerial] = state;
+
+        GWSerial[counterSerial] = isGateway;
+
+
 
 }
 void SERVitESApplLayer::sendWSM(WaveShortMessage* wsm) {
@@ -729,6 +760,7 @@ void SERVitESApplLayer::sendHelloMsg(){
     HelloMsg->setTtl(ttl);
     HelloMsg->setTraje(mobility->getRoadId()[0]);
     HelloMsg->setWsmData(mobility->getRoadId().c_str());//trajectory
+    HelloMsg->setResAccess(resAccess);
     HelloMsg->setKind(HELLO_MSG);
     sendWSM(HelloMsg);// line 2
 
@@ -768,6 +800,7 @@ void SERVitESApplLayer::sendCandidateMsg(){
     candidateMsg->setCsim(csim);//csim
     CSF = CHSelectionFactor(tcell.dbl() , csim , speedPenalty);
     candidateMsg->setCSF(CSF);
+    candidateMsg->setResAccess(resAccess);
     sendWSM(candidateMsg);
     candidateMsgSent = true;
     EV<<"Candidate message sent!"<<endl;
@@ -832,6 +865,7 @@ void SERVitESApplLayer::sendControllerMsg(){
     controllerMsg->setCSF(CSF);
     ID_Controller = myId;
     controllerMsg->setID_Controller(myId);//ID_Controllrer
+    controllerMsg->setResAccess(resAccess);
     sendWSM(controllerMsg);
     controllerMsgSent = true;
     EV<<"Controller message sent!"<<endl;
@@ -874,6 +908,7 @@ void SERVitESApplLayer::sendBeaconMsg(){
     CSF = CHSelectionFactor(tcell.dbl() , csim , speedPenalty);
     beaconMsg->setCSF(CSF);
     beaconMsg->setID_Controller(ID_Controller);// ID_Controller
+    beaconMsg->setResAccess(resAccess);
     sendWSM(beaconMsg);
     beaconMsgSent = true;
     EV<<"beacon message sent!"<<endl;
@@ -916,6 +951,7 @@ void SERVitESApplLayer::sendWarningMsg(){
     warningMsg->setCSF(CSF);
     warningMsg->setID_Controller(ID_Controller);// ID_Controller
     warningMsg->setID_Controller_Old(ID_Controller_Old);
+    warningMsg->setResAccess(resAccess);
     sendWSM(warningMsg);
     warningMsgSent = true;
     EV<<"Warning message sent!"<<endl;
@@ -968,6 +1004,7 @@ void SERVitESApplLayer::sendReorgnizingMsg(){
         reorgnizingMsg->setMemberID(cnt,it->id);
         cnt++;
     }
+    reorgnizingMsg->setResAccess(resAccess);
     sendWSM(reorgnizingMsg);
     reorgnizingMsgSent = true;
     EV<<"Reorgnizing message sent!"<<endl;
@@ -1021,6 +1058,7 @@ void SERVitESApplLayer::relayPacket(WaveShortMessage* wsm){
     relayMsg->setID_Gateway(wsm->getID_Gateway());
     // info about the relay node
     relayMsg->setRoute(hopNumber,myId);
+    relayMsg->setResAccess(resAccess);
     sendWSM(relayMsg);
     EV<<"Message with kind "<<relayMsg->getKind()<<", and source "<<
             relayMsg->getSenderAddress()<<" has been relayed!"<<endl;
@@ -1067,6 +1105,7 @@ void SERVitESApplLayer::sendJoinMsg(){
     CSF = CHSelectionFactor(tcell.dbl() , csim , speedPenalty);
     joinMsg->setCSF(CSF);
     joinMsg->setID_Controller(ID_Controller);// ID_Controller
+    joinMsg->setResAccess(resAccess);
     sendWSM(joinMsg);
     EV<<"Join message sent!"<<endl;
 }
@@ -1108,6 +1147,7 @@ void SERVitESApplLayer::sendGatewayMsg(){
     gatewayMsg->setCsim(csim);// csim
     gatewayMsg->setID_Controller(ID_Controller);// ID_Controller
     gatewayMsg->setIsGateway(isGateway);
+    gatewayMsg->setResAccess(resAccess);
     sendWSM(gatewayMsg);
     EV<<"Gateway message sent!"<<endl;
 }
@@ -1137,9 +1177,9 @@ void SERVitESApplLayer::sendQueryResponseMsg(){
     responseQueryMsg->setSerial(2);
     responseQueryMsg->setID(myId);// ID
     responseQueryMsg->setTtl(ttl+1);
-    responseQueryMsg->setID_requester(ID_reuester);
+    responseQueryMsg->setID_requester(ID_requester);
     responseQueryMsg->setRes(res);// res
-    res = 0;
+   // res = 0;
     responseQueryMsg->setID_requester(myId);
     responseQueryMsg->setState(state);//state
     responseQueryMsg->setTraje(mobility->getRoadId()[0]);
@@ -1152,6 +1192,7 @@ void SERVitESApplLayer::sendQueryResponseMsg(){
     responseQueryMsg->setCsim(csim);// csim
     responseQueryMsg->setID_Controller(ID_Controller);// ID_Controller
     responseQueryMsg->setIsGateway(isGateway);
+    responseQueryMsg->setResAccess(resAccess);
     sendWSM(responseQueryMsg);
     EV<<"query response message sent!"<<endl;
 }
@@ -1193,11 +1234,19 @@ void SERVitESApplLayer::sendQueryMsg(){
     queryMsg->setCsim(csim);// csim
     queryMsg->setID_Controller(ID_Controller);// ID_Controller
     queryMsg->setIsGateway(isGateway);
+    queryMsg->setResAccess(resAccess);
     sendWSM(queryMsg);
     EV<<"Query message sent!"<<endl;
 }
 void SERVitESApplLayer::useResource(){
     EV<<"Start using resources!"<<endl;
+    EV << "node [" << myId << "] is using node [" << wsm->getID() << "] resources." << endl;
+    serviceDuration = 0.1;
+    serviceDurationFinished = false ;
+    resAccess = false;
+    serviceTimer = new cMessage("serviceTimer",SERVICE_TIMER);
+    scheduleAt(simTime() + 5*(transmissionTime+individualOffset) + serviceDuration, serviceTimer);// n = 5;
+
 }
 
 simtime_t SERVitESApplLayer::calculateTCell(){
@@ -1281,6 +1330,9 @@ void SERVitESApplLayer::finish(){
     int numCHState = 0;
     int MVDuration = 0;
     int numMVState = 0;
+    int GWDuration = 0;
+    int numGWState = 0;
+
     for (int i=0;i<counterSerial;i++){
         if (stateSerial[i] == CH){
             CHDuration++;
@@ -1295,10 +1347,21 @@ void SERVitESApplLayer::finish(){
             numMVState++;
         }
     }
+    for (int i=0;i<counterSerial;i++){
+        if (GWSerial[i] == true){
+            GWDuration++;
+        }
+        if ((GWSerial[i] != true)&&(GWSerial[i+1] == true)){
+            numGWState++;
+        }
+
+    }
     double AvgCHDuration = 0;
     AvgCHDuration = double(CHDuration)/double(numCHState);
     double AvgMVDuration = 0;
     AvgMVDuration = double(MVDuration)/double(numMVState);
+    double AvgGWDuration = 0;
+    AvgGWDuration = double(GWDuration)/double(numGWState);
     if (numCHState > 0){
 
         recordScalar("Avg CH Duration",AvgCHDuration);
@@ -1312,5 +1375,12 @@ void SERVitESApplLayer::finish(){
     }
     else {
         recordScalar("Avg MV Duration",0);
+    }
+    if (numGWState > 0){
+
+        recordScalar("Avg GW Duration",AvgGWDuration);
+    }
+    else {
+        recordScalar("Avg GW Duration",0);
     }
 }
