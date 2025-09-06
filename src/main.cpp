@@ -44,8 +44,11 @@ void SERVitESApplLayer::initialize(int stage) {
             stateSerial[i] = -1;
             GWSerial[i] = -1 ;
             serviceSerial[i] = -1;
+            testNodeResponse[i]=-1;
         }
         stateSerial[counterSerial] = state;
+        serviceDuration = serviceDurationFunction(1);
+        serviceDurationTime = 0 ;
         ID_Controller = -1;
         CSF=0;
         csim = 0;
@@ -55,7 +58,7 @@ void SERVitESApplLayer::initialize(int stage) {
         cellnumber = getCellNumber(curPosition);
         transmissionTime = 0.005;
         beaconInterval = 0.5;
-        serviceInterval = 10;
+        serviceInterval = uniform(5,10);
         serviceSearchingTime=0;
         kindGateway = 1;// All nodes can be an internal GW
         ID_requester = -1;
@@ -75,11 +78,13 @@ void SERVitESApplLayer::initialize(int stage) {
         beaconMsgSent = false;
         warningMsgSent = false;
         reorgnizingMsgSent = false;
+        responseServiceMsgSent = false;
         sendQueryMessage = false;
         CHchange = false;
         isGateway = false;
         serviceDurationFinished = true;
         resAccess = true ;
+        receivedResFreeMsgAfterServiceResponse = false;
 
         CHDuration.setName("CH Duration");
         MVDuration.setName("MV Duration");
@@ -311,21 +316,13 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                if(MVJoins == true){
                EV << "resource number is : " << res << endl ;
                if ((res <= 2)&& (sendQueryMessage == false)){ // Algorithm 2, line 1
-                    ID_requester = myId;
-                    sendQueryMsg();// Algorithm 2, line 2
-                    requestNumber++;
-                    EV << "my Controller ID is(query) : " << ID_Controller << endl ;
-                    sendQueryMessage = true;
-                    resourceState = SEARCHING;
-                    serviceSearchingTime=simTime();
-                       }
                serviceIntervalTimer = new cMessage("serviceIntervalTimer",SERVICE_INTERVAL_TIMER);
                serviceIntervalTimer->setKind(SERVICE_INTERVAL_TIMER);
                if (serviceIntervalTimer->isScheduled() != true){//After creating the cluster,
                       //each vehicle inside a cluster periodically sends a service request message to the Controller,
                scheduleAt(simTime() + serviceInterval, serviceIntervalTimer);
                            }
-
+               }
                }
             /*   if (MVJoins == true){
                if ((res <= 2)&&(sendQueryMessage == false)){ // Algorithm 2, line 1
@@ -463,10 +460,33 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                             wsm->getTcell(),wsm->getTsim(), wsm->getCsim(),wsm->getWsmData(),ttl-wsm->getTtl()));
                     cRequesterList::iterator it1;
                     for(it1=requesterList.begin();it1!=requesterList.end();++it1){
-                        EV << "requster list is node : " << it1->id << endl;
+                        EV << "requester list is node : " << it1->id << endl;
                     }
+                }
 
-                    bool vehicleConnected = false;
+                    if (((state == MV) || (isGateway == true)) && (res > 0)){//When a vehicle receives a query message,
+                          //it verifies the availability of its resources and sends a response message with
+                          //the status of the allocation to the gateway.
+                        EV << "Provider is : " << myId << " resAccess is : "<< resAccess<< "  and requester is: " << wsm->getID_requester() <<" resAccess is: " << resAccess << endl;
+                        if ((resAccess == true) && (wsm->getID_requester()!=myId)){
+                        resAccess = false ;
+                        ID_requester=wsm->getID_requester();
+                        serviceDurationTime = wsm->getServiceDuration();
+                        sendQueryResponseMsg();
+                        responseServiceMsgSent = true;
+                        responseNumber++;
+                        resourceState = BUSY; // check with busy and free
+                        //int cntR = 0;
+                        //testNodeResponse[cntR]=ID_requester;
+                        //cntR++;
+                        //serviceDuration = serviceDurationFunction(1);
+
+                        waitingAfterServiceResponseMsg = new cMessage("waitingAfterServiceResponseMsg",WAITING_AFTER_SERVICE_RESPONSE_MSG);
+                        scheduleAt(simTime()+5*(transmissionTime+individualOffset),waitingAfterServiceResponseMsg);
+                        //serviceTimer = new cMessage("serviceTimer",SERVICE_TIMER);
+                       // scheduleAt(simTime() + 6*(transmissionTime+individualOffset) + serviceDurationTime , serviceTimer);// n = 5;
+                                        }
+                /*    bool vehicleConnected = false;
                     bool notAllResourceAllocated = false;
                     cConnectedVList::iterator it;
                     for (it=connectedVList.begin();it!=connectedVList.end();++it){
@@ -489,7 +509,7 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                         }
                     }
                 }
-                if ((state == MV) && (res > 0)){//When a vehicle receives a query message,
+              /*  if ((state == MV) && (res > 0)){//When a vehicle receives a query message,
                     //it verifies the availability of its resources and sends a response message with
                     //the status of the allocation to the gateway.
                     EV << "Provider is : " << myId << "  and requester is: " << wsm->getID_requester() << endl;
@@ -503,8 +523,8 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                         serviceTimer = new cMessage("serviceTimer",SERVICE_TIMER);
                         scheduleAt(simTime() + 6*(transmissionTime+individualOffset) + serviceDuration , serviceTimer);// n = 5;
                     }
-                }
-            //}
+                }*/
+              }
             }
             break;
         }
@@ -528,19 +548,39 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                         }
                     }
                 }
-                if ((state == MV)&&(sendQueryMessage == true)&&(resAccess==true)){//Algorithm 2, Line 4
+                if ((state == MV)&&(sendQueryMessage == true)&&(resourceState==SEARCHING)){//Algorithm 2, Line 4
+                    EV << "i get into 1" << endl;
                     if ((wsm->getRes() > 0)&&(myId == wsm->getID_requester())){////Algorithm 2, Line 5, 6
-                        sourceID=wsm->getID();
-                        EV << "source ID is : " << sourceID << endl;
+                        EV << "i get into 2" << endl;
+                        ID_requester = myId;
+                        sourceID = wsm->getSenderAddress();
+                        resourceState = BUSY;
                         serviceSearchingTime=simTime()-serviceSearchingTime;
-                        useResource();//Algorithm 2, Line 7&8
-                        useResNumber++;
+                        sendResReadyMsg();
+                        serviceTimer = new cMessage("serviceTimer",SERVICE_TIMER);
+                        scheduleAt(simTime() + 6*(transmissionTime+individualOffset) + serviceDurationTime , serviceTimer);// n = 5;
+
                     }
                 }
             }
         //}
             break;
         }
+        case RES_READY_MSG:{// Algorithm 3 and 4, Line 7
+                    if (getCellNumber(curPosition) == wsm->getCellNumber()){
+                        if ((myId == wsm->getRecipientAddress())&&(responseServiceMsgSent == true)){
+                                EV << "RES_READY_MSG is received" << endl;
+                                ID_requester = wsm->getID_requester();
+                                receivedResFreeMsgAfterServiceResponse = true;
+                                serviceDurationTime = wsm->getServiceDuration();
+                                //serviceSearchingTime=simTime()-serviceSearchingTime;
+                                EV << "Time of Service Duration is : " << serviceDurationTime << " s -- MY is: " << serviceDuration << endl;
+                                useResource();//Algorithm 2, Line 7&8
+                                useResNumber++;
+                      }
+                   }
+                    break;
+                }
         default: {
             break;
         }
@@ -592,6 +632,21 @@ void SERVitESApplLayer::handleSelfMsg(cMessage* msg){
             }
             break;
         }
+        case WAITING_AFTER_SERVICE_RESPONSE_MSG:{
+                   EV<<"WAITING_AFTER_SERVICE_RESPONSE_MSG timer fired!"<<endl;
+                   if (receivedResFreeMsgAfterServiceResponse == false){
+                       EV<<" no Allocation ! -- resources are free! "<<endl;
+                       resourceState = FREE;
+                       resAccess = true ;
+                   }
+                   else {
+                       resourceState = ALLOCATE;
+                       resAccess = false ;
+                       receivedResFreeMsgAfterServiceResponse = false;
+                   }
+                   break;
+                   }
+
         case SERVICE_TIMER:{
             EV<<"SERVICE_TIMER fired! -- resources are free"<<endl;
             serviceDurationFinished = true;
@@ -604,7 +659,11 @@ void SERVitESApplLayer::handleSelfMsg(cMessage* msg){
         }
         case SERVICE_INTERVAL_TIMER:{
             ID_requester = myId;
+            resAccess = false;
+            resourceState = SEARCHING;
             sendQueryMsg();
+            sendQueryMessage = true;
+            serviceSearchingTime=simTime();
             requestNumber++;
             serviceIntervalTimer = new cMessage("serviceIntervalTimer",SERVICE_INTERVAL_TIMER);
             serviceIntervalTimer->setKind(SERVICE_INTERVAL_TIMER);
@@ -1267,6 +1326,7 @@ void SERVitESApplLayer::sendQueryResponseMsg(){
     responseQueryMsg->setID_Controller(ID_Controller);// ID_Controller
     responseQueryMsg->setIsGateway(isGateway);
     responseQueryMsg->setResAccess(resAccess);
+    responseQueryMsg->setServiceDuration(serviceDurationTime);
     sendWSM(responseQueryMsg);
     EV<<"query response message sent!"<<endl;
 }
@@ -1311,8 +1371,54 @@ void SERVitESApplLayer::sendQueryMsg(){
     queryMsg->setID_Controller(ID_Controller);// ID_Controller
     queryMsg->setIsGateway(isGateway);
     queryMsg->setResAccess(resAccess);
+    queryMsg->setServiceDuration(serviceDuration);
     sendWSM(queryMsg);
     EV<<"Query message sent!"<<endl;
+}
+
+void SERVitESApplLayer::sendResReadyMsg(){
+    EV<<"Sending RES READY message !"<<endl;
+    WaveShortMessage* resReadyMsg = new WaveShortMessage("SERVitES",RES_READY_MSG);
+    t_channel channel = dataOnSch ? type_SCH : type_CCH;
+    resReadyMsg->addBitLength(headerLength);
+    resReadyMsg->addBitLength(dataLengthBits);
+    switch (channel) {
+        case type_SCH: resReadyMsg->setChannelNumber(Channels::SCH1); break; //will be rewritten at Mac1609_4 to actual Service Channel. This is just so no controlInfo is needed
+        case type_CCH: resReadyMsg->setChannelNumber(Channels::CCH); break;
+    }
+    for (int r = 0; r < 10; r++){
+        resReadyMsg->setRoute(r,-1);
+    }
+    resReadyMsg->setRoute(0,myId);
+    resReadyMsg->setPsid(0);
+    resReadyMsg->setPriority(dataPriority);
+    resReadyMsg->setWsmVersion(1);
+    resReadyMsg->setTimestamp(simTime());
+    resReadyMsg->setSenderAddress(myId);
+    resReadyMsg->setRecipientAddress(sourceID);
+    resReadyMsg->setSenderPos(curPosition);// coord
+    resReadyMsg->setCellNumber(getCellNumber(curPosition));
+    resReadyMsg->setSerial(2);
+    resReadyMsg->setID(myId);// ID
+    resReadyMsg->setRes(res);// res
+    resReadyMsg->setID_requester(ID_requester);
+    EV <<"ID requester is : " << myId << endl;
+    EV <<"ID requester is : " << ID_requester << endl;
+    resReadyMsg->setState(state);//state
+    resReadyMsg->setTraje(mobility->getRoadId()[0]);
+    resReadyMsg->setWsmData(mobility->getRoadId().c_str());
+    resReadyMsg->setKind(RES_READY_MSG);
+    tcell = calculateTCell();
+//    double d = distance(curPosition.x,curPosition.y,xmid,ymid,0,0);
+//    tcell = d/(mobility->getSpeed()+1);
+    resReadyMsg->setTcell(tcell.dbl());//tcell
+    resReadyMsg->setCsim(csim);// csim
+    resReadyMsg->setID_Controller(ID_Controller);// ID_Controller
+    resReadyMsg->setIsGateway(isGateway);
+    resReadyMsg->setResAccess(resAccess);
+    resReadyMsg->setServiceDuration(serviceDuration);
+    sendWSM(resReadyMsg);
+    EV<<"RES READY message sent!"<<endl;
 }
 
 void SERVitESApplLayer::maintenance(){
@@ -1339,14 +1445,32 @@ void SERVitESApplLayer::maintenance(){
 
 void SERVitESApplLayer::useResource(){
     EV<<"Start using resources!"<<endl;
-    EV << "node [" << myId << "] is using node [" << sourceID << "] resources." << endl;
-    serviceDuration = 0.5;
+    EV << "node [" << ID_requester << "] is using node [" << myId << "] resources." << endl;
+    //serviceDuration = serviceDurationFunction(1);
     serviceDurationFinished = false ;
     resAccess = false;
     resourceState = ALLOCATE;
     serviceTimer = new cMessage("serviceTimer",SERVICE_TIMER);
-    scheduleAt(simTime() + 5*(transmissionTime+individualOffset) + serviceDuration, serviceTimer);// n = 5;
+    scheduleAt(simTime() + 5*(transmissionTime+individualOffset) + serviceDurationTime, serviceTimer);// n = 5;
 
+}
+simtime_t SERVitESApplLayer::serviceDurationFunction(int resRequest){
+
+    simtime_t SD;
+
+    if(resRequest == 1){
+        //SD = 0.5;
+        SD = uniform(1,5);
+    }
+    if(resRequest == 2){
+        //SD = 0.5;
+        SD = uniform(1,5);
+    }
+    if(resRequest == 3){
+        //SD = 0.5;
+        SD = uniform(1,5);
+    }
+    return SD;
 }
 
 simtime_t SERVitESApplLayer::calculateTCell(){
@@ -1509,5 +1633,5 @@ void SERVitESApplLayer::finish(){
     recordScalar("response number",responseNumber);
     recordScalar("use resource",useResNumber);
     recordScalar("TEST VARIABLE" , testV);
-    recordScalar("Serive Searching TIME ",serviceSearchingTime);
+    recordScalar("Service Searching TIME ",serviceSearchingTime);
 }
