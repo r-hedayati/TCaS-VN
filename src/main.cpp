@@ -61,6 +61,8 @@ void SERVitESApplLayer::initialize(int stage) {
         beaconInterval = 0.5;
         serviceInterval = uniform(5,10);
         serviceSearchingTime=0;
+        serviceSearchingTimeMIN=1;
+        serviceSearchingTimeMAX=0;
         kindGateway = 1;// All nodes can be an internal GW
         ID_requester = -1;
         sourceID = -1;
@@ -89,6 +91,7 @@ void SERVitESApplLayer::initialize(int stage) {
         resAccess = true ;
         receivedResFreeMsgAfterServiceResponse = false;
         resReadyMsgSent = false;
+        joinToCluster = false;
 
         CHDuration.setName("CH Duration");
         MVDuration.setName("MV Duration");
@@ -128,7 +131,7 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                 }
                 if ((carExist == false)&&(wsm->getID() != myId)){
                     carList.push_back(Car(wsm->getID()));
-                    if ((tsimCalculate(wsm->getWsmData(),mobility->getRoadId())>0)&&(abs(mobility->getAngleRad()-wsm->getAngle()) <= 0.78)){
+                    if ((tsimCalculate(wsm->getWsmData(),mobility->getRoadId())>0)&&(std::abs(mobility->getAngleRad()-wsm->getAngle()) <= 0.78)){
                         csim++;
                     }
                     EV<<"Transmission time is updated : "<<transmissionTime<<endl;
@@ -147,8 +150,22 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                     CSF = CHSelectionFactor(tcell.dbl() , csim , speedPenalty);
                     EV << "My CSF is : " << CSF << endl;
 
+                    if (state == ND){//Line 8
+                    EV << "my state (hello) = ND "<<endl;
+                    if(CSF > wsm->getCSF()){
+                    if (candidateMsgSent == false){
+                    EV<<"Condition line 10 is satisfied! (HELLO)"<<endl;
+                     sendCandidateMsg();// Line 11
+                     waitingAfterCandidateHelloMsg = new cMessage("waitingAfterCandidateHelloMsg",WAITING_AFTER_CANDIDATE_Hello_MSG);
+                     scheduleAt(simTime()+5*(transmissionTime+individualOffset),waitingAfterCandidateHelloMsg);
+                        }
+                           }
+                    }
+                    else{
                     sendResponseMsg();
+
                     EV<<"Response message with state '"<<state<<"' is sent to "<<wsm->getID()<<endl;
+                    }
                     if (wsm->getTtl() > 0){
                         relayPacket(wsm);
                     }
@@ -170,7 +187,7 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                     }
                     if (carExist == false){
                         ResponsedCarList.push_back(Car(wsm->getID()));
-                        if ((tsimCalculate(wsm->getWsmData(),mobility->getRoadId())>0)&&(abs(mobility->getAngleRad()-wsm->getAngle()) <= 0.78)){
+                        if ((tsimCalculate(wsm->getWsmData(),mobility->getRoadId())>0)&&(std::abs(mobility->getAngleRad()-wsm->getAngle()) <= 0.78)){
                             csim++;
                         }
                     }
@@ -207,8 +224,9 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                             ID_Controller = wsm->getID_Controller();
                             EV<<"Controller is "<<ID_Controller<<endl;
                             if (ID_Controller == -1 ){
+                                EV << "CH CheckingMsg Starts..." << endl;
                                 CHcheckingMsg = new cMessage("CHcheckingMsg",CH_CHECKING_TIMER);
-                                scheduleAt(simTime()+5*(transmissionTime+individualOffset)+5,CHcheckingMsg);
+                                scheduleAt(simTime()+5*(transmissionTime+individualOffset)+10,CHcheckingMsg);
                             }
                             // Line 14 Store the information
                         }// Line 15
@@ -229,7 +247,21 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
         case CANDIDATE_MSG:{ // Line 21
             if (getCellNumber(curPosition) == wsm->getCellNumber()){
                 if (state == ND){
-                EV<<"Candidate message received!"<<endl;
+                EV<<"Candidate message received from node : " << wsm->getID() <<endl;
+                cancelAndDelete(waitingResponseTimer);
+                cCarList::iterator it;
+                bool carExist = false;
+                for (it=carList.begin();it!=carList.end();++it){
+                    if((wsm->getID()==it->id)){
+                        carExist = true;
+                    }
+                }
+                if ((carExist == false)&&(wsm->getID() != myId)){
+                    carList.push_back(Car(wsm->getID()));
+                    if ((tsimCalculate(wsm->getWsmData(),mobility->getRoadId())>0)&&(std::abs(mobility->getAngleRad()-wsm->getAngle()) <= 0.78)){
+                        csim++;
+                    }
+                }
                 CSF=CHSelectionFactor(tcell.dbl() , csim , speedPenalty);
                 // Analysis the information, Line 22
                 EV << "MY CSF is: " << CSF << " WSM CSF is: " << wsm->getCSF() << endl ;
@@ -238,12 +270,14 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                     ID_Controller=myId;
                     state = CH; // Line 24
                     sendControllerMsg(); // Line 25;
+                    joinToCluster=true;
                 }
                 else {// Line 26
                     // Store the Information!
                     state = MV ;
+                    EV << "CH CheckingMsg Starts..." << endl;
                     CHcheckingMsg = new cMessage("CHcheckingMsg",CH_CHECKING_TIMER);
-                    scheduleAt(simTime()+5*(transmissionTime+individualOffset)+5,CHcheckingMsg);
+                    scheduleAt(simTime()+5*(transmissionTime+individualOffset)+10,CHcheckingMsg); //*/
                 }// Line 27
               }
             }
@@ -254,6 +288,7 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
             bool MVJoins = false;
             EV<<"Control message received! and CSF is: " << wsm->getCSF() <<endl;
             receivedControlMsgAfterCandidate = true;
+            //cancelAndDelete(waitingAfterCandidateMsg);
             int numberOfController = 0;
             cControllerList::iterator it;
             bool controllerExist = false;// to check if the received controlMsg
@@ -279,31 +314,37 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                     if (CSF <= wsm->getCSF()){
                     ID_Controller = wsm->getID_Controller();
                     state = MV;
+                    cancelAndDelete(CHcheckingMsg);
                     sendJoinMsg();
                     EV<<"new MV tries to join to Cluster , CH is node :" << ID_Controller <<endl;
                     sendBeaconMsg();
                     MVJoins=true;
+                    joinToCluster = true;
                     }
                     else{
+                        EV << "wait for another controller ..." << endl;
                         // i don't accept to join to you , wait for another CH; // this can help us to reduce reorganizing msg
                     }
                 }
                 else {//Otherwise, the vehicle becomes a new Controller and creates a cluster.
-                    EV<<"Change state to CH!"<<endl;
+                    EV<<"Change state to CH! -- hopThereshold is not satisfied!"<<endl;
                     ID_Controller=myId;
                     state = CH;
                     sendControllerMsg();
+                    joinToCluster=true;
                 }
             }
             if (numberOfController > 1){//In the event that more than one
                 //cluster head exists, the vehicle joins a cluster where
                 //it will remain for the greatest trajectory similarity,
                 state = MV ;
+                int ID_Controller_Temp = ID_Controller;
                 controllerList.sort();
                 for (it=controllerList.begin();it!=controllerList.end();++it){
                 ID_Controller = it->id;
                 sendBeaconMsg();
                 }
+                ID_Controller=ID_Controller_Temp;
                 //vehicles that have connections with other clusters.
                 //These vehicles work as a communication bridge between
                 //clusters. When a vehicle succeeds in communicating with other
@@ -311,15 +352,33 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                 isGateway = true;
                 kindGateway = 2;
                 ID_Gateway = myId;
-                EV << " new MV: " << myId <<"becomes Gateway" << endl;
+                EV << " new MV: " << myId <<" becomes Gateway" << endl;
                 //sendGatewayMsg();
+                if (joinToCluster == false){
+                    if (CSF <= wsm->getCSF()){
+                    ID_Controller = wsm->getID_Controller();
+                    state = MV;
+                    cancelAndDelete(CHcheckingMsg);
+                    sendJoinMsg();
+                    EV<<"new MV tries to join to Cluster(GW) , CH is node :" << ID_Controller <<endl;
+                    sendBeaconMsg();
+                    MVJoins=true;
+                    joinToCluster = true;
+                              }
+                    else{
+                    EV << "wait for another controller(GW) ..." << endl;
+                     // i don't accept to join to you , wait for another CH; // this can help us to reduce reorganizing msg
+                    }
+                }
             }
+            if(ID_Controller != -1) {
             beaconTimer = new cMessage("beaconTimer",BEACON_TIMER);
             beaconTimer->setKind(BEACON_TIMER);
                if (beaconTimer->isScheduled() != true){//After creating the cluster,
                   //each vehicle inside a cluster periodically sends a beacon message to the Controller,
                    scheduleAt(simTime() + beaconInterval, beaconTimer);
                     }
+            }
 
                if(MVJoins == true){
                EV << "resource number is : " << res << endl ;
@@ -413,7 +472,8 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                     if (getCellNumber(curPosition) == wsm->getCellNumber()){
                         if ((isGateway == true)||(state == CH)){
                             if((ID_Controller==wsm->getID_Controller()) || (ID_Gateway==wsm->getID_Gateway())){ // I add this line to check whether is belong to controller or not
-                            EV<<"Beacon message received!"<<endl;
+                            EV<<"Beacon message received from "<< wsm->getID()<<endl;
+                            EV << "my ID is : " << myId << "Controller ID is :" << ID_Controller << endl;
                             cConnectedVList::iterator it;
                             bool carExistGW = false;// to check if the received controlMsg
                                     //had been received from existed controller
@@ -511,13 +571,19 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                 }
                 if ((state == MV)&&(sendQueryMessage == true)){
                     EV << "i get into 1" << endl;
-                    if ((myId == wsm->getID_requester())){
+                    if (myId == wsm->getID_requester()){
                         if(resReadyMsgSent == false){
                         EV << " my id is: " << myId << "res ready sent to:" << wsm->getSenderAddress() << endl;
                         ID_requester = myId;
                         sourceID = wsm->getSenderAddress();
                         resourceState = BUSY;
                         serviceSearchingTime=simTime()-serviceSearchingTime;
+                        if (serviceSearchingTime < serviceSearchingTimeMIN){
+                            serviceSearchingTimeMIN = serviceSearchingTime;
+                        }
+                        if(serviceSearchingTime > serviceSearchingTimeMAX){
+                            serviceSearchingTimeMAX = serviceSearchingTime;
+                        }
                         sendResReadyMsg();
                         resReadyNumber++;
                         //resReadyMsgSent = true;
@@ -568,15 +634,19 @@ void SERVitESApplLayer::handleSelfMsg(cMessage* msg){
             break;
         }
         case WAITING_RESPONSE_TIMER:{
+
             EV<<"WAITING_RESPONSE_TIMER fired"<<endl;
             waitingTimeExpireed = true;
             helloMsgSent = false;
             if (receiveMsgDuringWaiting == false){// line 30, if no response messages received during  waiting time
-                EV<<"Change state to CH!"<<endl;
+                if(state == ND){
+                EV<<"Change state to CH! -- no response Msg received!"<<endl;
                 state = CH; // Line 31
                 ID_Controller = myId;
                 sendControllerMsg(); // Line 32;
+                joinToCluster=true;
             }
+        }
             break;
         }
         case BEACON_TIMER:{
@@ -594,13 +664,26 @@ void SERVitESApplLayer::handleSelfMsg(cMessage* msg){
         case WAITING_AFTER_CANDIDATE_MSG:{
             EV<<"WAITING_AFTER_CANDIDATE_MSG timer fired!"<<endl;
             if (receivedControlMsgAfterCandidate == false){
-                EV<<"Change state to CH!"<<endl;
+                EV<<"Change state to CH! -- after candidate MSG"<<endl;
                 ID_Controller=myId;
                 state = CH;
                 sendControllerMsg();
+                joinToCluster=true;
             }
             break;
         }
+
+        case WAITING_AFTER_CANDIDATE_Hello_MSG:{
+                    EV<<"WAITING_AFTER_CANDIDATE_Hello_MSG timer fired!"<<endl;
+                    if (receivedControlMsgAfterCandidate == false){
+                        EV<<"Change state to CH! -- after candidate MSG"<<endl;
+                        ID_Controller=myId;
+                        state = CH;
+                        sendControllerMsg();
+                        joinToCluster=true;
+                    }
+                    break;
+                }
         case CH_CHECKING_TIMER:{
                     EV<<"CH_CHECKING timer fired!"<<endl;
                     if (ID_Controller == -1){
@@ -608,6 +691,7 @@ void SERVitESApplLayer::handleSelfMsg(cMessage* msg){
                         ID_Controller=myId;
                         state = CH;
                         sendControllerMsg();
+                        joinToCluster=true;
                     }
                     break;
                 }
@@ -916,6 +1000,8 @@ void SERVitESApplLayer::sendHelloMsg(){
     HelloMsg->setTraje(mobility->getRoadId()[0]);
     HelloMsg->setWsmData(mobility->getRoadId().c_str());//trajectory
     HelloMsg->setResAccess(resAccess);
+    CSF = CHSelectionFactor(tcell.dbl() , csim , speedPenalty);
+    HelloMsg->setCSF(CSF);
     HelloMsg->setKind(HELLO_MSG);
     sendWSM(HelloMsg);// line 2
 
@@ -1090,7 +1176,7 @@ void SERVitESApplLayer::sendBeaconMsg(){
     beaconMsg->setResAccess(resAccess);
     sendWSM(beaconMsg);
     beaconMsgSent = true;
-    EV<<"beacon message sent!"<<endl;
+    EV<<"beacon message sent to "<< ID_Controller <<endl;
 }
 void SERVitESApplLayer::sendWarningMsg(){
     EV<<"Sending Warning message !"<<endl;
@@ -1562,11 +1648,25 @@ double SERVitESApplLayer::speedPenaltyFunction(double speed){
 return speedPenalty ;
 }
 double SERVitESApplLayer::CHSelectionFactor (double CellTime , int VehicleNumber , double SpeedFactor ){
+    /*if ((CellTime >= 0) && (CellTime < 10)) {
     return alpha*CellTime + beta*VehicleNumber + gama*SpeedFactor;
+    }
+    if ((CellTime >= 10) && (CellTime < 100)) {
+    return alpha*CellTime/10 + beta*VehicleNumber + gama*SpeedFactor;
+    }
+    if ((CellTime >= 100) && (CellTime < 1001)) {
+    return alpha*CellTime/100 + beta*VehicleNumber + gama*SpeedFactor;
+    }
+    if (CellTime > 1001){
+    return alpha*CellTime/1000 + beta*VehicleNumber + gama*SpeedFactor;
+    }*/
+    return alpha*CellTime/10 + beta*VehicleNumber + gama*SpeedFactor;
 }
 int SERVitESApplLayer::calculateSpeedThereshold(int maxSpeed){
 
     int beta = 2 ;
+    if (maxSpeed == 5)
+        return beta * 1.3 ;
     if (maxSpeed==10)
         return beta *  2.4 ;
     if (maxSpeed==15)
@@ -1583,6 +1683,15 @@ int SERVitESApplLayer::calculateSpeedThereshold(int maxSpeed){
            return beta *  8.89;
     // from journal
 
+}
+
+simtime_t SERVitESApplLayer::calculateTransmitionTime(){
+
+    int CWmin = 15 ; //based IEEE 802.11p
+    int CWmax = 1023 ; //based IEEE 802.11p
+    double n = 0.005;
+
+    return hopthreshold*n*(CWmax-CWmin) + CWmin ;
 }
 
 void SERVitESApplLayer::finish(){
@@ -1681,5 +1790,7 @@ void SERVitESApplLayer::finish(){
     recordScalar("requestHelp",requestHelpNumber);
     recordScalar("Res Ready",resReadyNumber);
     //recordScalar("TEST VARIABLE" , testV);
-    recordScalar("Service Searching TIME ",serviceSearchingTime);
+    recordScalar("Service Searching TIME MIN ",serviceSearchingTimeMIN);
+    recordScalar("Service Searching TIME MAX ",serviceSearchingTimeMAX);
+    recordScalar("join cluster ",joinToCluster);
 }
