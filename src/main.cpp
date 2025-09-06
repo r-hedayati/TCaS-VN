@@ -68,6 +68,7 @@ void SERVitESApplLayer::initialize(int stage) {
         responseNumber = 0;
         useResNumber = 0;
         testV = 0;
+        //CHnumber = 0;
 
         receiveMsgDuringWaiting = false;
         receivedControlMsgAfterCandidate = false;
@@ -85,11 +86,13 @@ void SERVitESApplLayer::initialize(int stage) {
         serviceDurationFinished = true;
         resAccess = true ;
         receivedResFreeMsgAfterServiceResponse = false;
+        resReadyMsgSent = false;
 
         CHDuration.setName("CH Duration");
         MVDuration.setName("MV Duration");
         ServiceAvailability.setName("Service Availability");
         ServiceSTATE.setName("RESOURCE STATE");
+        CHnumber.setName("CH NUMBER");
 
         helloMsgTimer = new cMessage("HelloTimer",HELLO_MSG_TIMER);
         helloMsgTimer->setKind(HELLO_MSG_TIMER);
@@ -206,6 +209,10 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                             EV<<"State is set to MV"<<endl;
                             ID_Controller = wsm->getID_Controller();
                             EV<<"Controller is "<<ID_Controller<<endl;
+                            if (ID_Controller == -1 ){
+                                CHcheckingMsg = new cMessage("CHcheckingMsg",CH_CHECKING_TIMER);
+                                scheduleAt(simTime()+5*(transmissionTime+individualOffset)+5,CHcheckingMsg);
+                            }
                             // Line 14 Store the information
                         }// Line 15
                     }// Line 16
@@ -232,19 +239,22 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
               //  if ((csim >= wsm->getCsim())&&(tcell >= wsm->getTcell())){   //Line 23
                 if(CSF > wsm->getCSF()){
                     EV<<"Change state to CH!"<<endl;
+                    ID_Controller=myId;
                     state = CH; // Line 24
                     sendControllerMsg(); // Line 25;
                 }
                 else {// Line 26
                     // Store the Information!
                     state = MV ;
+                    CHcheckingMsg = new cMessage("CHcheckingMsg",CH_CHECKING_TIMER);
+                    scheduleAt(simTime()+5*(transmissionTime+individualOffset)+5,CHcheckingMsg);
                 }// Line 27
               }
             }
             break;
         }// Line 28
         case CONTROL_MSG:{
-            if ((state == MV) || (state = ND)){
+            if ((state == MV) || (state == ND)){
             bool MVJoins = false;
             EV<<"Control message received!"<<endl;
             receivedControlMsgAfterCandidate = true;
@@ -284,6 +294,7 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                 }
                 else {//Otherwise, the vehicle becomes a new Controller and creates a cluster.
                     EV<<"Change state to CH!"<<endl;
+                    ID_Controller=myId;
                     state = CH;
                     sendControllerMsg();
                 }
@@ -482,7 +493,7 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                         //serviceDuration = serviceDurationFunction(1);
 
                         waitingAfterServiceResponseMsg = new cMessage("waitingAfterServiceResponseMsg",WAITING_AFTER_SERVICE_RESPONSE_MSG);
-                        scheduleAt(simTime()+5*(transmissionTime+individualOffset),waitingAfterServiceResponseMsg);
+                        scheduleAt(simTime()+10*(transmissionTime+individualOffset),waitingAfterServiceResponseMsg);
                         //serviceTimer = new cMessage("serviceTimer",SERVICE_TIMER);
                        // scheduleAt(simTime() + 6*(transmissionTime+individualOffset) + serviceDurationTime , serviceTimer);// n = 5;
                                         }
@@ -548,18 +559,22 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
                         }
                     }
                 }
-                if ((state == MV)&&(sendQueryMessage == true)&&(resourceState==SEARCHING)){//Algorithm 2, Line 4
-                    EV << "i get into 1" << endl;
-                    if ((wsm->getRes() > 0)&&(myId == wsm->getID_requester())){////Algorithm 2, Line 5, 6
-                        EV << "i get into 2" << endl;
+                if ((state == MV)&&(sendQueryMessage == true)&&(resourceState==SEARCHING)){
+                    if ((wsm->getRes() > 0)&&(myId == wsm->getID_requester())){
+                        if(resReadyMsgSent == false){
+                        EV << " my id is: " << myId << "res ready sent to:" << wsm->getSenderAddress() << endl;
                         ID_requester = myId;
                         sourceID = wsm->getSenderAddress();
                         resourceState = BUSY;
                         serviceSearchingTime=simTime()-serviceSearchingTime;
                         sendResReadyMsg();
+                        resReadyMsgSent = true;
+                        serviceDurationTime = serviceDuration;
+                        waitingAfterResReadyMsg = new cMessage("waitingAfterResReadyMsg",WAITING_AFTER_RES_READY_MSG);
+                        scheduleAt(simTime()+5*(transmissionTime+individualOffset),waitingAfterResReadyMsg);
                         serviceTimer = new cMessage("serviceTimer",SERVICE_TIMER);
                         scheduleAt(simTime() + 6*(transmissionTime+individualOffset) + serviceDurationTime , serviceTimer);// n = 5;
-
+                        }
                     }
                 }
             }
@@ -569,6 +584,7 @@ void SERVitESApplLayer::onData(WaveShortMessage* wsm) {
         case RES_READY_MSG:{// Algorithm 3 and 4, Line 7
                     if (getCellNumber(curPosition) == wsm->getCellNumber()){
                         if ((myId == wsm->getRecipientAddress())&&(responseServiceMsgSent == true)){
+
                                 EV << "RES_READY_MSG is received" << endl;
                                 ID_requester = wsm->getID_requester();
                                 receivedResFreeMsgAfterServiceResponse = true;
@@ -607,6 +623,7 @@ void SERVitESApplLayer::handleSelfMsg(cMessage* msg){
             if (receiveMsgDuringWaiting == false){// line 30, if no response messages received during  waiting time
                 EV<<"Change state to CH!"<<endl;
                 state = CH; // Line 31
+                ID_Controller = myId;
                 sendControllerMsg(); // Line 32;
             }
             break;
@@ -627,37 +644,85 @@ void SERVitESApplLayer::handleSelfMsg(cMessage* msg){
             EV<<"WAITING_AFTER_CANDIDATE_MSG timer fired!"<<endl;
             if (receivedControlMsgAfterCandidate == false){
                 EV<<"Change state to CH!"<<endl;
+                ID_Controller=myId;
                 state = CH;
                 sendControllerMsg();
             }
             break;
         }
+        case CH_CHECKING_TIMER:{
+                    EV<<"CH_CHECKING timer fired!"<<endl;
+                    if (ID_Controller == -1){
+                        EV<<"No Controller Assigned! -- change to CH"<<endl;
+                        ID_Controller=myId;
+                        state = CH;
+                        sendControllerMsg();
+                    }
+                    break;
+                }
         case WAITING_AFTER_SERVICE_RESPONSE_MSG:{
                    EV<<"WAITING_AFTER_SERVICE_RESPONSE_MSG timer fired!"<<endl;
                    if (receivedResFreeMsgAfterServiceResponse == false){
-                       EV<<" no Allocation ! -- resources are free! "<<endl;
+                       EV<<" no Allocation ! -- node[" << myId << "] is free!" <<endl;
                        resourceState = FREE;
                        resAccess = true ;
                    }
                    else {
+                       EV << "node [" << myId <<"] is used..." << endl;
                        resourceState = ALLOCATE;
                        resAccess = false ;
                        receivedResFreeMsgAfterServiceResponse = false;
                    }
                    break;
                    }
+        case WAITING_AFTER_RES_READY_MSG:{
+                   EV<<"WAITING_AFTER_RES_READY_MSG timer fired!"<<endl;
+                   if (resAccess == false){
+                       EV<<" node[" << myId << "] is using other resources!" <<endl;
+                       resourceState = ALLOCATE;
+                   }
+                   else {
+                       EV << "node [" << myId <<"] is free" << endl;
+                       //resourceState = FREE;
+                       //resAccess = true ;
+                   }
+                   break;
+                   }
+        case WAITING_AFTER_QUERY_MSG:{
+                          EV<<"WAITING_AFTER_QUERY_MSG timer fired!"<<endl;
+                          if (resReadyMsgSent == false){
+                              EV<<" node[" << myId << "] can't find any resources" <<endl;
+                              ID_requester = myId;
+                              resAccess = false;
+                              resourceState = SEARCHING;
+                              sendQueryMsg();
+                              sendQueryMessage = true;
+                              serviceSearchingTime=simTime();
+                              requestNumber++;
 
+                              waitingAfterQueryMsg = new cMessage(" waitingAfterQueryMsg",WAITING_AFTER_QUERY_MSG);
+                              scheduleAt(simTime()+10*(transmissionTime+individualOffset),waitingAfterQueryMsg);
+                          }
+                          else {
+                              EV << "node [" << myId <<"] find some resources! -- process is being continued" << endl;
+                              //resourceState = FREE;
+                              //resAccess = true ;
+                          }
+                          break;
+                          }
         case SERVICE_TIMER:{
             EV<<"SERVICE_TIMER fired! -- resources are free"<<endl;
             serviceDurationFinished = true;
             resAccess = true;
             resourceState = FREE;
             sendQueryMessage = false;
+            resReadyMsgSent = false;
             EV << "node [" << myId <<"] resources are free -->" << resAccess << endl;
            // scheduleAt(simTime() + 5*(transmissionTime+individualOffset) + serviceDuration, serviceTimer);// n = 5;
             break;
         }
         case SERVICE_INTERVAL_TIMER:{
+            if (resAccess == true){
             ID_requester = myId;
             resAccess = false;
             resourceState = SEARCHING;
@@ -665,11 +730,23 @@ void SERVitESApplLayer::handleSelfMsg(cMessage* msg){
             sendQueryMessage = true;
             serviceSearchingTime=simTime();
             requestNumber++;
+
+            waitingAfterQueryMsg = new cMessage(" waitingAfterQueryMsg",WAITING_AFTER_QUERY_MSG);
+            scheduleAt(simTime()+10*(transmissionTime+individualOffset),waitingAfterQueryMsg);
+
             serviceIntervalTimer = new cMessage("serviceIntervalTimer",SERVICE_INTERVAL_TIMER);
             serviceIntervalTimer->setKind(SERVICE_INTERVAL_TIMER);
             if (serviceIntervalTimer->isScheduled() != true){//After creating the cluster,
                 //each vehicle inside a cluster periodically sends a service request message to the Controller,
                 scheduleAt(simTime() + serviceInterval, serviceIntervalTimer);
+                  }
+            }
+            else {
+                EV << " we can't access to resources -- new Timer Starts..." << endl;
+                if (serviceIntervalTimer->isScheduled() != true){//After creating the cluster,
+                    //each vehicle inside a cluster periodically sends a service request message to the Controller,
+                    scheduleAt(simTime() + serviceInterval, serviceIntervalTimer);
+                      }
             }
             break;
         }
@@ -788,7 +865,12 @@ void SERVitESApplLayer::handlePositionUpdate(cObject* obj) {
     serviceSerial[counterSerial] = resAccess;
 
 
-
+if (ID_Controller == -1){
+    CHnumber.record(0);
+}
+else {
+    CHnumber.record(1);
+}
 
 
 }
